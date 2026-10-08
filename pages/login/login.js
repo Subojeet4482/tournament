@@ -28,6 +28,7 @@ const friendly = (e) => {
     if(c === 'auth/account-exists-with-different-credential') return 'This email is registered with a password. Please log in using your password.';
     if(c === 'auth/unverified-email') return 'Email not verified yet. Please check your inbox (and spam folder) for the verification link.';
     if(c === 'auth/invalid-email') return 'Please enter a valid email address.';
+    if(e && e.code === 'origin_not_allowed') return 'This website domain is not allowed on the server. Add it to ALLOWED_ORIGINS in Render.';
     return (e && e.message) || 'Something went wrong';
 };
 
