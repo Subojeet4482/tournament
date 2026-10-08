@@ -94,7 +94,7 @@ window.app = {
         try {
             const r=await api.get('/me');
             if(r.user) window.app.applyUserDoc(r.user);
-        } catch(e){}
+        } catch(e){ console.warn('[me] profile load failed:', e.code, e.message); }
     },
     validateAmount: (el) => { if(el.value<0) el.value=""; },
 };
