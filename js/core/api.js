@@ -64,18 +64,43 @@ export const api = {
     ...mk(''),
     chat: mk(BACKEND + '/chat'),
     currentUser: () => (S ? { uid: S.uid, email: S.email || '', displayName: S.name || 'Player', providerData: [], metadata: {}, emailVerified: true } : null),
+    // Direct Firebase login (client key). Backend only verifies the ID token and creates the profile on first /me.
     login: async (email, password) => {
-        const r = await req('POST', '/auth/login', { email, password });
-        const t = await exchange(r.customToken);
-        save({ uid: r.uid, email, name: 'Player', ...t });
-        try { const me = await req('GET', '/me'); save({ ...S, name: (me.user && me.user.appName) || 'Player' }); } catch (e) {}
+        const idt = 'https://identitytoolkit.googleapis.com/v1/accounts:';
+        const post = (ep, body) => rest(idt + ep + '?key=' + KEY, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+        const { r, j } = await post('signInWithPassword', { email, password, returnSecureToken: true });
+        if (!r.ok) {
+            const m = String((j && j.error && j.error.message) || ''), c = m.split(' ')[0];
+            if (['INVALID_LOGIN_CREDENTIALS', 'INVALID_PASSWORD', 'EMAIL_NOT_FOUND'].includes(c)) throw err('invalid_credentials', 'Incorrect email or password. Please check and try again.');
+            if (c === 'USER_DISABLED') throw err('disabled', 'Account disabled');
+            if (c === 'TOO_MANY_ATTEMPTS_TRY_LATER') throw err('rate_limited', 'Too many attempts. Please wait a few minutes and try again.');
+            console.error('[login] Firebase signIn failed:', m);
+            throw err('auth_unavailable', 'Login unavailable (' + (c || 'HTTP ' + r.status) + '). Check FB_API_KEY in js/config.js and key referrers.');
+        }
+        const look = await post('lookup', { idToken: j.idToken });
+        if (!(look.j && look.j.users && look.j.users[0] && look.j.users[0].emailVerified)) {
+            await post('sendOobCode', { requestType: 'VERIFY_EMAIL', idToken: j.idToken }).catch(() => {});
+            throw err('email_not_verified', 'Email not verified. We sent a verification link - open it (check Spam too), then login again.');
+        }
+        save({ uid: j.localId, email, name: 'Player', idToken: j.idToken, refreshToken: j.refreshToken, exp: Date.now() + (+j.expiresIn || 3600) * 1000 });
+        try { const me = await req('GET', '/me'); save({ ...S, name: (me.user && me.user.appName) || 'Player' }); }
+        catch (e) { save(null); if (e.code === 'bad_token') throw err('token_rejected', 'Server could not verify the login. Render KEY64_1 / FIREBASE_MAIN_PROJECT_ID must be the same Firebase project as FB_API_KEY.'); throw e; }
         emit();
     },
+    // Direct Google login: Google popup gives an access token -> Firebase REST signInWithIdp (no backend in between).
     googleLogin: async (accessToken) => {
-        const r = await req('POST', '/auth/google', { accessToken });
-        const t = await exchange(r.customToken);
-        save({ uid: r.uid, email: '', name: 'Player', ...t });
-        try { const me = await req('GET', '/me'); save({ ...S, email: (me.user && me.user.email) || '', name: (me.user && me.user.appName) || 'Player' }); } catch (e) {}
+        const { r, j } = await rest('https://identitytoolkit.googleapis.com/v1/accounts:signInWithIdp?key=' + KEY, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ postBody: 'access_token=' + encodeURIComponent(accessToken) + '&providerId=google.com', requestUri: location.origin, returnIdpCredential: true, returnSecureToken: true }) });
+        if (!r.ok) {
+            const m = String((j && j.error && j.error.message) || ''), c = m.split(' ')[0];
+            if (c === 'OPERATION_NOT_ALLOWED') throw err('google_off', 'Google sign-in is not enabled in Firebase (Authentication > Sign-in method > Google).');
+            if (c === 'USER_DISABLED') throw err('disabled', 'Account disabled');
+            console.error('[google] Firebase signInWithIdp failed:', m);
+            throw err('auth_unavailable', 'Google sign-in unavailable (' + (c || 'HTTP ' + r.status) + ').');
+        }
+        if (j.needConfirmation || !j.localId) throw err('use_password', 'This email already has a password account. Login with email & password.');
+        save({ uid: j.localId, email: j.email || '', name: 'Player', idToken: j.idToken, refreshToken: j.refreshToken, exp: Date.now() + (+j.expiresIn || 3600) * 1000 });
+        try { const me = await req('GET', '/me'); save({ ...S, email: (me.user && me.user.email) || S.email, name: (me.user && me.user.appName) || 'Player' }); }
+        catch (e) { save(null); if (e.code === 'bad_token') throw err('token_rejected', 'Server could not verify the login. Render KEY64_1 / FIREBASE_MAIN_PROJECT_ID must be the same Firebase project as FB_API_KEY.'); throw e; }
         emit(); return S.name;
     },
     // fire-and-forget request that survives page close (used for the "offline" presence ping)
