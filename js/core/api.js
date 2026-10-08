@@ -21,7 +21,11 @@ async function rest(url, init) {
 }
 async function exchange(customToken) {
     const { r, j } = await rest('https://identitytoolkit.googleapis.com/v1/accounts:signInWithCustomToken?key=' + KEY, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ token: customToken, returnSecureToken: true }) });
-    if (!r.ok) throw err('auth_unavailable', 'Login unavailable. Please try again.');
+    if (!r.ok) {
+        const why = (j && j.error && j.error.message) || ('HTTP ' + r.status);
+        console.error('[login] Firebase token exchange failed:', why, '(check: API key referrers, Identity Toolkit API enabled, KEY64_1 project == FB_API_KEY project)');
+        throw err('auth_unavailable', 'Login unavailable (' + String(why).split(' ')[0] + '). Please try again.');
+    }
     return { idToken: j.idToken, refreshToken: j.refreshToken, exp: Date.now() + (+j.expiresIn || 3600) * 1000 };
 }
 let refreshing = null;
